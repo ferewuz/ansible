@@ -141,15 +141,25 @@ def get_optional_args(refresh_sec, retry_sec, expire_sec, ttl_sec):
     return kwargs
 
 
+def find_domain(api, name):
+    domains = api.domain_list()
+    # Get ID of domain with that name
+    return next(
+        (domain['DOMAINID'] for domain in domains
+            if domain['DOMAIN'] == name),
+        None
+    )
+
+
 def linodeDNS(module, api, state, name, hostname, domain_type, ip, soa_email,
               refresh_sec, retry_sec, expire_sec, ttl_sec, status, master_ips):
 
     if state == 'present':
         if not ip:
-                module.exit_json(
-                    changed=False,
-                    msg="You need to provide IP when creating domain record."
-                )
+            module.exit_json(
+                changed=False,
+                msg="You need to provide IP when creating domain record."
+            )
 
         kwargs = get_optional_args(refresh_sec, retry_sec, expire_sec, ttl_sec)
 
@@ -159,21 +169,32 @@ def linodeDNS(module, api, state, name, hostname, domain_type, ip, soa_email,
                     changed=False,
                     msg="For master domain, SOA email must be provided."
                 )
-            result = api.domain_create(
-                Domain=name,
-                Type=domain_type,
-                SOA_Email=soa_email,
-                status=STATUSES[status],
-                **kwargs
-            )
-            domain_id = result['DomainID']
+            domain_id = find_domain(api, name)
 
-            api.domain_resource_create(
-                DomainID=domain_id,
-                Type='A',
-                Target=ip,
-                Name=hostname,
-            )
+            if not domain_id:
+                try:
+                    result = api.domain_create(
+                        Domain=name,
+                        Type=domain_type,
+                        SOA_Email=soa_email,
+                        status=STATUSES[status],
+                        **kwargs
+                    )
+                except Exception, e:
+                    module.fail_json(msg='%s' % e.value[0]['ERRORMESSAGE'])
+
+                domain_id = result['DomainID']
+
+            try:
+                api.domain_resource_create(
+                    DomainID=domain_id,
+                    Type='A',
+                    Target=ip,
+                    Name=hostname,
+                )
+            except Exception, e:
+                module.fail_json(msg='%s' % e.value[0]['ERRORMESSAGE'])
+
             module.exit_json(changed=True)
 
         if domain_type == 'slave':
@@ -182,23 +203,20 @@ def linodeDNS(module, api, state, name, hostname, domain_type, ip, soa_email,
                     changed=False,
                     msg="For slave domain, master_ips must be provided."
                 )
-            api.domain_create(
-                Domain=name,
-                Type=domain_type,
-                status=status,
-                master_ips=master_ips,
-                **kwargs
-            )
+            try:
+                api.domain_create(
+                    Domain=name,
+                    Type=domain_type,
+                    status=status,
+                    master_ips=master_ips,
+                    **kwargs
+                )
+            except Exception, e:
+                module.fail_json(msg='%s' % e.value[0]['ERRORMESSAGE'])
 
     elif state == 'absent':
 
-        domains = api.domain_list()
-        # Get ID of domain with that name
-        domain_id = next(
-            (domain['DOMAINID'] for domain in domains
-                if domain['DOMAIN'] == name),
-            None
-        )
+        domain_id = find_domain(api, name)
         if not domain_id:
             module.exit_json(
                 changed=False,
@@ -214,7 +232,7 @@ def main():
             state=dict(default='present', choices=['present', 'absent']),
             api_key=dict(aliases=['API_KEY'], no_log=True),
             name=dict(required=True, type='str'),
-            hostname=dict(default='www', type='str'),
+            hostname=dict(default='', type='str'),
             domain_type=dict(type='str', default='master', choices=['master', 'slave']),
             soa_email=dict(type='str'),
             ip=dict(type='str'),
@@ -255,8 +273,8 @@ def main():
     except Exception, e:
         module.fail_json(msg='%s' % e.value[0]['ERRORMESSAGE'])
 
-    linodeDNS(module, api, state, name, hostname, domain_type, ip, soa_email, refresh_sec,
-        retry_sec, expire_sec, ttl_sec, status, master_ips)
+    linodeDNS(module, api, state, name, hostname, domain_type, ip, soa_email,
+              refresh_sec, retry_sec, expire_sec, ttl_sec, status, master_ips)
 
 # import module snippets
 from ansible.module_utils.basic import *
